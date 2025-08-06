@@ -1,3 +1,22 @@
+#project
+**/__pycache__/
+lightning_logs/
+.ipynb_checkpoints/
+*.egg-info
+.pyc
+results*
+logs*
+recon.*
+dataset/
+**/span.log
+wandb/*
+*.png
+varvae_results
+checkpoints
+labels
+.idea/
+
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
