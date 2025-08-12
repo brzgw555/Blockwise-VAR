@@ -87,40 +87,44 @@ class VectorQuantizer2(nn.Module):
             mean_vq_loss: torch.Tensor = 0.0
             vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=f_BChw.device)
             SN = len(self.v_patch_nums)
-            for si, pn in enumerate(self.v_patch_nums): # from low to high
-                f_rest_split=split_into_8x8_blocks(f_rest) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
+            f_dct_save=[]                
+            f_split=split_into_8x8_blocks(f_rest) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
                 
-                f_rest_split_dct= dct_2d(f_rest_split)
-                f_rest_dct_masked=f_rest_split_dct.clone()
-                if si < SN - 1:
-                    f_rest_dct_masked[:,:,:,:,pn+1:8,pn+1:8]=0
+            f_split_dct= dct_2d(f_split)
+            for si, pn in enumerate(self.v_patch_nums): # from low to high
+                dct_range= si+1 if si < 4 else 2*si-2
 
-                rest_NC=f_rest_dct_masked.permute(0,2,3,4,5,1).contiguous().reshape(-1,C)
+                f_dct_masked=torch.zeros_like(f_split)
+                f_dct_masked[:,:,:,:,:dct_range,:dct_range]=f_split_dct[:,:,:,:,:dct_range,:dct_range]
+                if si > 0:
+                    f_dct_masked[:,:,:,:,:dct_range-1,:dct_range-1]=0
+                f_dct_masked = idct_2d(f_dct_masked)
+                f_dct_masked = restore_from_8x8_blocks(f_dct_masked)
+                
+            
                 # find the nearest embedding
-                if self.using_znorm:
-                    
-                    rest_NC = F.normalize(rest_NC, dim=-1)
-                    idx_N = torch.argmax(rest_NC @ F.normalize(self.embedding.weight.data.T, dim=0), dim=1)
+                
+                if si < SN-1:
+                    downsample_f = F.interpolate(f_dct_masked, size=(pn, pn), mode='area').permute(0, 2, 3, 1).contiguous().reshape(-1, C) 
                 else:
-                    
-                    d_no_grad = torch.sum(rest_NC.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
-                    d_no_grad.addmm_(rest_NC, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
-                    idx_N = torch.argmin(d_no_grad, dim=1)
+                    downsample_f = f_dct_masked.permute(0, 2, 3, 1).contiguous().reshape(-1, C)
+                d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
+                d_no_grad.addmm_(downsample_f, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
+                idx_N = torch.argmin(d_no_grad, dim=1)
                 
                 hit_V = idx_N.bincount(minlength=self.vocab_size).float()
                 if self.training:
                     if dist.initialized(): handler = tdist.all_reduce(hit_V, async_op=True)
                 
                 # calc loss
-                idx_Bhw = idx_N.view(B, H//8, W//8,8,8)
-                h_BChw = self.embedding(idx_Bhw).permute(0, 5, 1, 2, 3, 4).contiguous()
+                idx_Bhw = idx_N.view(B, pn ,pn)
+                h_BChw = self.embedding(idx_Bhw).permute(0, 3, 1, 2).contiguous()
                 if si < SN - 1: 
-                    h_BChw[:,:,:,:,pn+1:8,pn+1:8]=0 
-                h_BChw=idct_2d(h_BChw)
-                h_BChw=restore_from_8x8_blocks(h_BChw)
+                    h_BChw = F.interpolate(h_BChw, size=(H, W), mode='bicubic')
+                
                 h_BChw = self.quant_resi[si/(SN-1)](h_BChw)
                 f_hat = f_hat + h_BChw
-                f_rest -= h_BChw
+                
                 
                 if self.training and dist.initialized():
                     handler.wait()
@@ -134,10 +138,10 @@ class VectorQuantizer2(nn.Module):
             mean_vq_loss *= 1. / SN
             f_hat = (f_hat.data - f_no_grad).add_(f_BChw)
         
-        margin = tdist.get_world_size() * (f_BChw.numel() / f_BChw.shape[1]) / self.vocab_size * 0.08
+        #margin = tdist.get_world_size() * (f_BChw.numel() / f_BChw.shape[1]) / self.vocab_size * 0.08
         # margin = pn*pn / 100
-        if ret_usages: usages = [(self.ema_vocab_hit_SV[si] >= margin).float().mean().item() * 100 for si, pn in enumerate(self.v_patch_nums)]
-        else: usages = None
+        #if ret_usages: usages = [(self.ema_vocab_hit_SV[si] >= margin).float().mean().item() * 100 for si, pn in enumerate(self.v_patch_nums)]
+        usages = None
         return f_hat, usages, mean_vq_loss
     # ===================== `forward` is only used in VAE training =====================
     

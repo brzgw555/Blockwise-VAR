@@ -70,7 +70,7 @@ def main():
             #name=os.path.basename(os.path.normpath(args.default_root_dir)),
             dir=args.default_root_dir,
             config=args,
-            mode="online" #if args.debug else "online"
+            mode="offline" #if args.debug else "online"
         )
     else:
         logger = create_logger(None)

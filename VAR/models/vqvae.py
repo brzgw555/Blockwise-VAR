@@ -39,7 +39,7 @@ class VQVAE(nn.Module):
         self.quant_resi=0.5# 0.5 means \phi(x) = 0.5conv(x) + (1-0.5)x
         self.default_qresi_counts=0# use 4 \phi layers for K scales: partially-shared \phi
         self.test_mode=False# if is 0: automatically set to len(v_patch_nums)
-        self.v_patch_nums=(0,1,2,3,4,5,6,7)# number of patches for each scale, h_{1 to K} = w_{1 to K} = v_patch_nums[k]
+        self.v_patch_nums=(1,2,4,8,12,16)# number of patches for each scale, h_{1 to K} = w_{1 to K} = v_patch_nums[k]
         self.args=args
         self.image_gan_weight=args.image_gan_weight
         

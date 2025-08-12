@@ -51,7 +51,7 @@ FIXED_ARGS="--patch_size 16 \
     --disc_layers 3 --discriminator_iter_start 50000 \
     --l1_weight 1 --perceptual_weight 1 --image_disc_weight 1 --image_gan_weight 0.3  --gan_feat_weight 0 --lfq_weight 4 \
     --entropy_loss_weight 0.1 --diversity_gamma 1 \
-    --default_root_dir block_wise_frequency \
+    --default_root_dir block_wise_results \
     --new_quant --lr_drop 450000 \
     --max_steps 500000 \
     --log_every 20 --ckpt_every 10000 --visu_every 10000 \
