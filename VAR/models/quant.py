@@ -87,7 +87,7 @@ class VectorQuantizer2(nn.Module):
             mean_vq_loss: torch.Tensor = 0.0
             vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=f_BChw.device)
             SN = len(self.v_patch_nums)
-            f_dct_save=[]                
+                           
             f_split=split_into_8x8_blocks(f_rest) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
                 
             f_split_dct= dct_2d(f_split)
