@@ -102,10 +102,10 @@ class VectorQuantizer2(nn.Module):
                     f_dct_masked[:,:,:,:,:dct_range-1,:dct_range-1]=0
                 f_dct_masked = idct_2d(f_dct_masked)
                 f_dct_masked = restore_from_8x8_blocks(f_dct_masked)
-                #f_no_grad_dct_range = torch.zeros_like(f_no_grad_split,requires_grad=False)
-                #f_no_grad_dct_range[:,:,:,:,:dct_range,:dct_range]=f_no_grad_split_dct[:,:,:,:,:dct_range,:dct_range]
-                #f_no_grad_dct_range = idct_2d(f_no_grad_dct_range)
-                #f_no_grad_dct_range = restore_from_8x8_blocks(f_no_grad_dct_range)
+                f_no_grad_dct_range = torch.zeros_like(f_no_grad_split,requires_grad=False)
+                f_no_grad_dct_range[:,:,:,:,:dct_range,:dct_range]=f_no_grad_split_dct[:,:,:,:,:dct_range,:dct_range]
+                f_no_grad_dct_range = idct_2d(f_no_grad_dct_range)
+                f_no_grad_dct_range = restore_from_8x8_blocks(f_no_grad_dct_range)
                 
             
                 # find the nearest embedding
@@ -139,12 +139,11 @@ class VectorQuantizer2(nn.Module):
                     else: self.ema_vocab_hit_SV[si].mul_(0.99).add_(hit_V.mul(0.01))
                     self.record_hit += 1
                 vocab_hit_V.add_(hit_V)
-                #mean_vq_loss += F.mse_loss(f_hat, f_no_grad_dct_range)
+                mean_vq_loss += F.mse_loss(f_hat, f_no_grad_dct_range)+F.mse_loss(f_hat.data,f_BChw).mul_(self.beta)
             
-            #mean_vq_loss *=1. / SN
-            mean_vq_loss += F.mse_loss(f_hat, f_no_grad) 
-            mean_vq_loss += F.mse_loss(f_hat.data, f_BChw).mul_(self.beta)
-            mean_vq_loss *=0.25
+            mean_vq_loss *=1. / SN
+            
+            
             f_hat = (f_hat.data - f_no_grad).add_(f_BChw)
         
         # margin = tdist.get_world_size() * (f_BChw.numel() / f_BChw.shape[1]) / self.vocab_size * 0.08
