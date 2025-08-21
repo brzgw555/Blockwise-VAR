@@ -13,7 +13,6 @@ wandb/*
 *.png
 varvae_results
 checkpoints
-labels
 .idea/
 block_wise_results
 calculate_fid.py
