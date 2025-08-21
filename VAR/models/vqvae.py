@@ -39,9 +39,11 @@ class VQVAE(nn.Module):
         self.quant_resi=0.5# 0.5 means \phi(x) = 0.5conv(x) + (1-0.5)x
         self.default_qresi_counts=0# use 4 \phi layers for K scales: partially-shared \phi
         self.test_mode=False# if is 0: automatically set to len(v_patch_nums)
-        self.v_patch_nums=(1,2,4,8,12,16)# number of patches for each scale, h_{1 to K} = w_{1 to K} = v_patch_nums[k]
+        self.v_patch_nums=(1,2,4,6,8,10,13,16)# number of patches for each scale, h_{1 to K} = w_{1 to K} = v_patch_nums[k]
         self.args=args
         self.image_gan_weight=args.image_gan_weight
+        
+         
         
         self.V, self.Cvae = args.vocab_size, args.z_channels
         # ddconfig is copied from https://github.com/CompVis/latent-diffusion/blob/e66308c7f2e64cb581c6d27ab6fbeb846828253b/models/first_stage_models/vq-f16/config.yaml
@@ -58,7 +60,7 @@ class VQVAE(nn.Module):
         self.vocab_size = args.vocab_size
         self.downsample = 2 ** (len(ddconfig['ch_mult'])-1)
         self.quantize: VectorQuantizer2 = VectorQuantizer2(
-            vocab_size=args.vocab_size, Cvae=self.Cvae, using_znorm=self.using_znorm, beta=self.beta,
+            vocab_size=args.vocab_size, Cvae=2*self.Cvae, using_znorm=self.using_znorm, beta=self.beta,
             default_qresi_counts=self.default_qresi_counts, v_patch_nums=self.v_patch_nums, quant_resi=self.quant_resi, share_quant_resi=args.share_quant_resi,
         )
         self.quant_conv = torch.nn.Conv2d(self.Cvae, self.Cvae, self.quant_conv_ks, stride=1, padding=self.quant_conv_ks//2)

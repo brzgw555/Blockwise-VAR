@@ -48,14 +48,112 @@ class VectorQuantizer2(nn.Module):
         self.Cvae: int = Cvae
         self.using_znorm: bool = using_znorm
         self.v_patch_nums: Tuple[int] = v_patch_nums
+        self.scale=['1', '2', '4', '6', '8', '10', '13', '16']
+        self.conv_params=[(3,2,1),(3,2,1),(3,2,1),(5,2,0),(3,2,1),(7,1,0),(4,1,0),(3,1,1)]  #(kernel_size,stride,padding)
+        self.conv_blocks=nn.ModuleDict({
+            '1':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=2,stride=1,padding=0,bias=True),
+                nn.SiLU(),
+                ),
+            '2':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
+                nn.SiLU(),
+                ),
+            '4':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[2][0],stride=self.conv_params[2][1],padding=self.conv_params[2][2],bias=True),
+                nn.SiLU(),
+                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[2][0],stride=self.conv_params[2][1],padding=self.conv_params[2][2],bias=True),
+                nn.SiLU(),
+
+            ),
+            '6':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[3][0],stride=self.conv_params[3][1],padding=self.conv_params[3][2],bias=True),
+                nn.SiLU(),
+            ),
+            '8':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[4][0],stride=self.conv_params[4][1],padding=self.conv_params[4][2],bias=True),
+                nn.SiLU(),
+            ),
+            '10':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[5][0],stride=self.conv_params[5][1],padding=self.conv_params[5][2],bias=True),
+                nn.SiLU(),
+            ),
+            '13':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[6][0],stride=self.conv_params[6][1],padding=self.conv_params[6][2],bias=True),
+                nn.SiLU(),
+            ),
+            '16':nn.Sequential(
+                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[7][0],stride=self.conv_params[7][1],padding=self.conv_params[7][2],bias=True),
+                nn.SiLU(),
+            )
+
+        })
+
+        self.deconv_blocks=nn.ModuleDict({
+            '1':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=2,stride=1,padding=0,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+            ),
+            '2':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+            ),
+            '4':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+            ),
+            '6':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=6,stride=2,padding=0,bias=True),
+                nn.SiLU(),
+            ),
+            '8':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
+                nn.SiLU(),
+            ),
+            '10':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[5][0],stride=self.conv_params[5][1],padding=self.conv_params[5][2],bias=True),
+                nn.SiLU(),
+            ),
+            '13':nn.Sequential(
+                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[6][0],stride=self.conv_params[6][1],padding=self.conv_params[6][2],bias=True),
+                nn.SiLU(),
+            ),
+            '16':nn.Sequential(
+                nn.Conv2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[7][0],stride=self.conv_params[7][1],padding=self.conv_params[7][2], bias=True),
+                nn.SiLU(),
+            )
+
+        })
         
         self.quant_resi_ratio = quant_resi
         if share_quant_resi == 0:   # non-shared: \phi_{1 to K} for K scales
-            self.quant_resi = PhiNonShared([(Phi(Cvae, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity()) for _ in range(default_qresi_counts or len(self.v_patch_nums))])
+            self.quant_resi = PhiNonShared([(Phi(Cvae//2, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity()) for _ in range(default_qresi_counts or len(self.v_patch_nums))])
         elif share_quant_resi == 1: # fully shared: only a single \phi for K scales
-            self.quant_resi = PhiShared(Phi(Cvae, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity())
+            self.quant_resi = PhiShared(Phi(Cvae//2, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity())
         else:                       # partially shared: \phi_{1 to share_quant_resi} for K scales
-            self.quant_resi = PhiPartiallyShared(nn.ModuleList([(Phi(Cvae, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity()) for _ in range(share_quant_resi)]))
+            self.quant_resi = PhiPartiallyShared(nn.ModuleList([(Phi(Cvae//2, quant_resi) if abs(quant_resi) > 1e-6 else nn.Identity()) for _ in range(share_quant_resi)]))
         
         self.register_buffer('ema_vocab_hit_SV', torch.full((len(self.v_patch_nums), self.vocab_size), fill_value=0.0))
         self.record_hit = 0
@@ -81,7 +179,7 @@ class VectorQuantizer2(nn.Module):
         f_no_grad = f_BChw.detach()
         
         f_rest = f_no_grad.clone()
-        f_hat = torch.zeros_like(f_rest)
+        f_hat = torch.zeros_like(f_BChw)
         
         with torch.cuda.amp.autocast(enabled=False):
             mean_vq_loss: torch.Tensor = 0.0
@@ -92,7 +190,7 @@ class VectorQuantizer2(nn.Module):
             f_no_grad_split = split_into_8x8_blocks(f_no_grad) 
                 
             f_split_dct= dct_2d(f_split)
-            f_no_grad_split_dct = dct_2d(f_no_grad_split)
+            
             for si, pn in enumerate(self.v_patch_nums): # from low to high
                 dct_range= si+1
 
@@ -102,18 +200,17 @@ class VectorQuantizer2(nn.Module):
                     f_dct_masked[:,:,:,:,:dct_range-1,:dct_range-1]=0
                 f_dct_masked = idct_2d(f_dct_masked)
                 f_dct_masked = restore_from_8x8_blocks(f_dct_masked)
-                f_no_grad_dct_range = torch.zeros_like(f_no_grad_split,requires_grad=False)
-                f_no_grad_dct_range[:,:,:,:,:dct_range,:dct_range]=f_no_grad_split_dct[:,:,:,:,:dct_range,:dct_range]
-                f_no_grad_dct_range = idct_2d(f_no_grad_dct_range)
-                f_no_grad_dct_range = restore_from_8x8_blocks(f_no_grad_dct_range)
+                #f_no_grad_dct_range = torch.zeros_like(f_no_grad_split,requires_grad=False)
+                #f_no_grad_dct_range[:,:,:,:,:dct_range,:dct_range]=f_no_grad_split_dct[:,:,:,:,:dct_range,:dct_range]
+                #f_no_grad_dct_range = idct_2d(f_no_grad_dct_range)
+                #f_no_grad_dct_range = restore_from_8x8_blocks(f_no_grad_dct_range)
                 
             
                 # find the nearest embedding
+                scale = self.scale[si]
+                downsample_f = self.conv_blocks[scale](f_dct_masked)
+                downsample_f = downsample_f.permute(0, 2, 3, 1).contiguous().reshape(-1,2*C)  # (B*h*w, 2*C)
                 
-                if si < SN-1:
-                    downsample_f = F.interpolate(f_dct_masked, size=(pn, pn), mode='area').permute(0, 2, 3, 1).contiguous().reshape(-1, C) 
-                else:
-                    downsample_f = f_dct_masked.permute(0, 2, 3, 1).contiguous().reshape(-1, C)
                 d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
                 d_no_grad.addmm_(downsample_f, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
                 idx_N = torch.argmin(d_no_grad, dim=1)
@@ -123,12 +220,17 @@ class VectorQuantizer2(nn.Module):
                     if dist.initialized(): handler = tdist.all_reduce(hit_V, async_op=True)
                 
                 # calc loss
+                downsample_f = downsample_f.reshape(B, pn ,pn ,2*C)
                 idx_Bhw = idx_N.view(B, pn ,pn)
-                h_BChw = self.embedding(idx_Bhw).permute(0, 3, 1, 2).contiguous()
-                if si < SN - 1: 
-                    h_BChw = F.interpolate(h_BChw, size=(H, W), mode='bicubic')
+                h_BChw = self.embedding(idx_Bhw)
+                mean_vq_loss += F.mse_loss(h_BChw,downsample_f.detach())
+                mean_vq_loss += F.mse_loss(h_BChw.detach(),downsample_f).mul(self.beta)
+                h_BChw = h_BChw + (downsample_f - downsample_f.detach())
+                h_BChw = h_BChw.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
+                h_BChw = self.deconv_blocks[scale](h_BChw)  # (B, C, H, W)
                 
                 h_BChw = self.quant_resi[si/(SN-1)](h_BChw)
+                
                 f_hat = f_hat + h_BChw
                 
                 
@@ -139,12 +241,16 @@ class VectorQuantizer2(nn.Module):
                     else: self.ema_vocab_hit_SV[si].mul_(0.99).add_(hit_V.mul(0.01))
                     self.record_hit += 1
                 vocab_hit_V.add_(hit_V)
-                mean_vq_loss += F.mse_loss(f_hat, f_no_grad_dct_range)+F.mse_loss(f_hat.data,f_BChw).mul_(self.beta)
+                
+                
             
-            mean_vq_loss *=1. / SN
+            mean_vq_loss *=1. / (SN*2)
+            
+            mean_vq_loss+=F.mse_loss(f_hat.detach(),f_BChw).mul_(self.beta)* 0.5
+            mean_vq_loss+= F.mse_loss(f_hat,f_no_grad)* 0.5
             
             
-            f_hat = (f_hat.data - f_no_grad).add_(f_BChw)
+            #f_hat = (f_hat.detach() - f_no_grad).add(f_BChw)
         
         # margin = tdist.get_world_size() * (f_BChw.numel() / f_BChw.shape[1]) / self.vocab_size * 0.08
         # margin = pn*pn / 100
