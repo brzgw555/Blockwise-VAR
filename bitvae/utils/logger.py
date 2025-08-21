@@ -8,7 +8,11 @@ def create_logger(logging_dir):
     """
     Create a logger that writes to a log file and stdout.
     """
-    if dist.get_rank() == 0:  # real logger
+    try:
+        rank = dist.get_rank()
+    except:
+        rank = 0
+    if rank == 0:  # real logger
         existing_logs = glob.glob(os.path.join(logging_dir, 'log_*.txt'))
         log_numbers = [int(log.split('.txt')[0].split('_')[-1]) for log in existing_logs]
         next_log_number = max(log_numbers) + 1 if log_numbers else 1

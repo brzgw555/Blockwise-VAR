@@ -50,8 +50,11 @@ def main():
 
     # Setup DDP:
     init_distributed_mode(args)
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
+    try:
+        rank = dist.get_rank()
+        world_size = dist.get_world_size()
+    except:
+        rank, world_size = 0, 1
     device = rank % torch.cuda.device_count()
     torch.cuda.set_device(device)
 

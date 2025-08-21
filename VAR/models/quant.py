@@ -50,7 +50,7 @@ class VectorQuantizer2(nn.Module):
         self.v_patch_nums: Tuple[int] = v_patch_nums
         self.scale=['1', '2', '4', '6', '8', '10', '13', '16']
         self.conv_params=[(3,2,1),(3,2,1),(3,2,1),(5,2,0),(3,2,1),(7,1,0),(4,1,0),(3,1,1)]  #(kernel_size,stride,padding)
-        self.conv_blocks=nn.ModuleDict({
+        self.conv_blocks=nn.ModuleDict({ # ZIAN: Use loop for definition.
             '1':nn.Sequential(
                 nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
                 nn.SiLU(),
