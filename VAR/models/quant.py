@@ -186,7 +186,7 @@ class VectorQuantizer2(nn.Module):
             vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=f_BChw.device)
             SN = len(self.v_patch_nums)
                            
-            f_split=split_into_8x8_blocks(f_rest) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
+            f_split=split_into_8x8_blocks(f_BChw) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
             f_no_grad_split = split_into_8x8_blocks(f_no_grad) 
                 
             f_split_dct= dct_2d(f_split)
@@ -244,10 +244,10 @@ class VectorQuantizer2(nn.Module):
                 
                 
             
-            mean_vq_loss *=1. / (SN*2)
+            mean_vq_loss *=1. / SN
             
-            mean_vq_loss+=F.mse_loss(f_hat.detach(),f_BChw).mul_(self.beta)* 0.5
-            mean_vq_loss+= F.mse_loss(f_hat,f_no_grad)* 0.5
+            #mean_vq_loss+=F.mse_loss(f_hat.detach(),f_BChw).mul_(self.beta)* 0.5
+            #mean_vq_loss+= F.mse_loss(f_hat,f_no_grad)* 0.5
             
             
             #f_hat = (f_hat.detach() - f_no_grad).add(f_BChw)
