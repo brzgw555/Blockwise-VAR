@@ -140,8 +140,9 @@ def main():
             model_optims, _ = resume_from_ckpt(state_dict, model_optims, load_optimizer=load_optimizer)
         logger.info(f"Successfully loaded ckpt {args.pretrained}, pretrained_mode {args.pretrained_mode}")
 
-    vqvae = DDP(vqvae.to(device), device_ids=[args.gpu], bucket_cap_mb=args.bucket_cap_mb)
-    image_disc = DDP(image_disc.to(device), device_ids=[args.gpu], bucket_cap_mb=args.bucket_cap_mb)
+    if world_size > 1:
+        vqvae = DDP(vqvae.to(device), device_ids=[args.gpu], bucket_cap_mb=args.bucket_cap_mb)
+        image_disc = DDP(image_disc.to(device), device_ids=[args.gpu], bucket_cap_mb=args.bucket_cap_mb)
     disc_loss = get_disc_loss(args.disc_loss_type) # hinge loss by default
 
     if args.multiscale_training:
@@ -170,7 +171,7 @@ def main():
                 _batch = next(dataloader_iters[idx])
             except Exception as e:
                 raise e 
-            x = _batch["image"]
+            x = _batch["image"].to(device)
             _type = _batch["type"][0]
 
             if args.multiscale_training:

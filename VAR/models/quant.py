@@ -5,6 +5,7 @@ import torch
 from torch import distributed as tdist, nn as nn
 from torch.nn import functional as F
 from torch_dct import dct_2d, idct_2d
+from einops import rearrange, repeat
 
 import dist
 
@@ -15,15 +16,10 @@ __all__ = ['VectorQuantizer2',]
 def split_into_8x8_blocks(x):
     
     B, C, H, W = x.shape
-    assert H % 8 == 0 and W % 8 == 0, "H,W must be divisible by 8"
-    num_blocks_h = H // 8  # patch num of height
-    num_blocks_w = W // 8  # patch num of width
-    
-    
+    assert H % 8 == 0 and W % 8 == 0, "H,W must be divisible by 8"    
+
     # (B, C, H, W) → (B, C, num_blocks_h, 8, num_blocks_w, 8)
-    blocks = x.view(B, C, num_blocks_h, 8, num_blocks_w, 8)
-    # -> (B, C, num_blocks_h, num_blocks_w, 8, 8)
-    blocks = blocks.permute(0, 1, 2, 4, 3, 5).contiguous()
+    blocks = rearrange(x, "b c (nh bh) (nw bw) -> b c nh nw bh bw", bh=8, bw=8)
     return blocks
 def restore_from_8x8_blocks(blocks):
     
@@ -32,120 +28,89 @@ def restore_from_8x8_blocks(blocks):
     
     
     # (B, C, num_blocks_h, num_blocks_w, 8, 8) → (B, C, num_blocks_h, 8, num_blocks_w, 8)
-    x = blocks.permute(0, 1, 2, 4, 3, 5).contiguous()
-    # resize->(B, C, H, W)
-    x = x.view(B, C, num_blocks_h * 8, num_blocks_w * 8)
+    x = rearrange(blocks, "b c nh nw bh bw -> b c (nh bh) (nw bw)")
     return x
 
 class VectorQuantizer2(nn.Module):
     
     def __init__(
         self, vocab_size, Cvae, using_znorm, beta: float = 1.0,
-        default_qresi_counts=0, v_patch_nums=None, quant_resi=0.5, share_quant_resi=4,  # share_quant_resi: args.qsr
+        default_qresi_counts=0, v_patch_nums=None, quant_resi=0.5, share_quant_resi=4, dct_conv_layers=4  # share_quant_resi: args.qsr
     ):
         super().__init__()
         self.vocab_size: int = vocab_size
         self.Cvae: int = Cvae
         self.using_znorm: bool = using_znorm
         self.v_patch_nums: Tuple[int] = v_patch_nums
+        # ZIAN: Use loop for definition.
         self.scale=['1', '2', '4', '6', '8', '10', '13', '16']
-        self.conv_params=[(3,2,1),(3,2,1),(3,2,1),(5,2,0),(3,2,1),(7,1,0),(4,1,0),(3,1,1)]  #(kernel_size,stride,padding)
-        self.conv_blocks=nn.ModuleDict({ # ZIAN: Use loop for definition.
-            '1':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[0][0],stride=self.conv_params[0][1],padding=self.conv_params[0][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=2,stride=1,padding=0,bias=True),
-                nn.SiLU(),
-                ),
-            '2':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[1][0],stride=self.conv_params[1][1],padding=self.conv_params[1][2],bias=True),
-                nn.SiLU(),
-                ),
-            '4':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[2][0],stride=self.conv_params[2][1],padding=self.conv_params[2][2],bias=True),
-                nn.SiLU(),
-                nn.Conv2d(self.Cvae,self.Cvae,kernel_size=self.conv_params[2][0],stride=self.conv_params[2][1],padding=self.conv_params[2][2],bias=True),
-                nn.SiLU(),
+        self.conv_params=[(2,2,0),(3,2,1),(3,2,1),(5,2,0),(3,2,1),(7,1,0),(4,1,0),(3,1,1)]  #(kernel_size,stride,padding)
+        num_convs_map = {'1': 1, '2': 3, '4': 2, '6': 1, '8': 1, '10': 1, '13': 1, '16': 1}
 
-            ),
-            '6':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[3][0],stride=self.conv_params[3][1],padding=self.conv_params[3][2],bias=True),
-                nn.SiLU(),
-            ),
-            '8':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[4][0],stride=self.conv_params[4][1],padding=self.conv_params[4][2],bias=True),
-                nn.SiLU(),
-            ),
-            '10':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[5][0],stride=self.conv_params[5][1],padding=self.conv_params[5][2],bias=True),
-                nn.SiLU(),
-            ),
-            '13':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[6][0],stride=self.conv_params[6][1],padding=self.conv_params[6][2],bias=True),
-                nn.SiLU(),
-            ),
-            '16':nn.Sequential(
-                nn.Conv2d(self.Cvae//2,self.Cvae,kernel_size=self.conv_params[7][0],stride=self.conv_params[7][1],padding=self.conv_params[7][2],bias=True),
-                nn.SiLU(),
-            )
+        # ----------------- helpers -----------------
+        def _conv3x3(in_ch, out_ch, bias=True):
+            return nn.Conv2d(in_ch, out_ch, kernel_size=3, stride=1, padding=1,
+                            padding_mode='replicate', bias=bias)
 
+        class AdaptiveScaleNorm(nn.Module):
+            """
+            Channel-wise LayerNorm-style conditioning for NCHW.
+            Uses GroupNorm(1, C) as LN over channels per spatial location,
+            then applies FiLM: y = norm(x) * (1 + gamma) + beta,
+            where [gamma, beta] are predicted from a scale embedding.
+            """
+            def __init__(self, num_channels: int, emb_dim: int):
+                super().__init__()
+                self.norm = nn.GroupNorm(1, num_channels, eps=1e-6, affine=False)
+                self.mlp = nn.Sequential(
+                    nn.SiLU(),
+                    nn.Linear(emb_dim, 2 * num_channels)
+                )
+
+            def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+                """
+                x: (N, C, H, W)
+                emb: (N, D)  per-sample conditioning vector
+                """
+                h = self.mlp(emb)                       # (N, 2C)
+                gamma, beta = h.chunk(2, dim=-1)        # (N, C), (N, C)
+                gamma = gamma.unsqueeze(-1).unsqueeze(-1)  # (N, C, 1, 1)
+                beta  = beta.unsqueeze(-1).unsqueeze(-1)   # (N, C, 1, 1)
+                x = self.norm(x)
+                return x * (1 + gamma) + beta
+
+        # ----------------- BUILD -----------------
+        emb_dim = Cvae  # small is fine; tune if you like
+
+        # map scales to stable ids
+        self.scale_to_idx = {str(s): i for i, s in enumerate(self.scale)}
+        self.scale_embed  = nn.Embedding(len(self.scale), emb_dim)
+
+        # --- ENCODER: shared convs ---
+        enc_layers = []
+        enc_layers += [_conv3x3(self.Cvae // 2, self.Cvae), nn.SiLU(inplace=True)]
+        for _ in range(max(0, dct_conv_layers - 1)):
+            enc_layers += [_conv3x3(self.Cvae, self.Cvae), nn.SiLU(inplace=True)]
+        self.enc_convs = nn.Sequential(*enc_layers)
+        self.enc_adapter = AdaptiveScaleNorm(self.Cvae // 2, emb_dim)
+        self.enc_downsamples = nn.ModuleDict({
+            str(s): (nn.Identity() if int(s) == 16 else nn.AdaptiveAvgPool2d((int(s), int(s))))
+            for s in self.scale
         })
 
-        self.deconv_blocks=nn.ModuleDict({
-            '1':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=2,stride=1,padding=0,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-            ),
-            '2':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-            ),
-            '4':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-            ),
-            '6':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=6,stride=2,padding=0,bias=True),
-                nn.SiLU(),
-            ),
-            '8':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=4,stride=2,padding=1,bias=True),
-                nn.SiLU(),
-            ),
-            '10':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[5][0],stride=self.conv_params[5][1],padding=self.conv_params[5][2],bias=True),
-                nn.SiLU(),
-            ),
-            '13':nn.Sequential(
-                nn.ConvTranspose2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[6][0],stride=self.conv_params[6][1],padding=self.conv_params[6][2],bias=True),
-                nn.SiLU(),
-            ),
-            '16':nn.Sequential(
-                nn.Conv2d(self.Cvae,self.Cvae//2,kernel_size=self.conv_params[7][0],stride=self.conv_params[7][1],padding=self.conv_params[7][2], bias=True),
-                nn.SiLU(),
-            )
+        # --- DECODER: shared upsample + shared convs ---
+        self.dec_upsample = nn.Upsample(size=(16, 16), mode='bilinear', align_corners=False)
+        self.dec_adapter = AdaptiveScaleNorm(self.Cvae, emb_dim)
 
-        })
+        dec_layers = []
+        for _ in range(max(0, dct_conv_layers - 1)):
+            dec_layers += [_conv3x3(self.Cvae, self.Cvae), nn.SiLU(inplace=True)]
+        dec_layers += [nn.Conv2d(self.Cvae, self.Cvae // 2, kernel_size=1, bias=True)]
+        self.dec_convs = nn.Sequential(*dec_layers)
+
+
+
+        
         
         self.quant_resi_ratio = quant_resi
         if share_quant_resi == 0:   # non-shared: \phi_{1 to K} for K scales
@@ -171,6 +136,11 @@ class VectorQuantizer2(nn.Module):
     def extra_repr(self) -> str:
         return f'{self.v_patch_nums}, znorm={self.using_znorm}, beta={self.beta}  |  S={len(self.v_patch_nums)}, quant_resi={self.quant_resi_ratio}'
     
+    def _scale_emb(self, s: str, batch: int, device):
+        idx = torch.tensor(self.scale_to_idx[s], device=device, dtype=torch.long)
+        e = self.scale_embed(idx)                # (emb_dim,)
+        return e.unsqueeze(0).expand(batch, -1)  # (N, emb_dim)
+    
     # ===================== `forward` is only used in VAE training =====================
     def forward(self, f_BChw: torch.Tensor, ret_usages=False) -> Tuple[torch.Tensor, List[float], torch.Tensor]:
         dtype = f_BChw.dtype
@@ -189,27 +159,32 @@ class VectorQuantizer2(nn.Module):
             f_split=split_into_8x8_blocks(f_BChw) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
             # f_no_grad_split = split_into_8x8_blocks(f_no_grad) 
                 
-            f_split_dct= dct_2d(f_split)
+            f_split_dct= dct_2d(f_split, norm="ortho")
             
             for si, pn in enumerate(self.v_patch_nums): # from low to high
                 dct_range= si+1
+                scale = self.scale[si]
 
                 f_dct_masked=torch.zeros_like(f_split)
                 f_dct_masked[:,:,:,:,:dct_range,:dct_range]=f_split_dct[:,:,:,:,:dct_range,:dct_range]
                 if si > 0:
                     f_dct_masked[:,:,:,:,:dct_range-1,:dct_range-1]=0
-                f_dct_masked = idct_2d(f_dct_masked)
+                f_dct_masked = idct_2d(f_dct_masked, norm="ortho")
                 f_dct_masked = restore_from_8x8_blocks(f_dct_masked)
                 #f_no_grad_dct_range = torch.zeros_like(f_no_grad_split,requires_grad=False)
                 #f_no_grad_dct_range[:,:,:,:,:dct_range,:dct_range]=f_no_grad_split_dct[:,:,:,:,:dct_range,:dct_range]
                 #f_no_grad_dct_range = idct_2d(f_no_grad_dct_range)
                 #f_no_grad_dct_range = restore_from_8x8_blocks(f_no_grad_dct_range)
                 
-            
-                # find the nearest embedding
-                scale = self.scale[si]
-                downsample_f = self.conv_blocks[scale](f_dct_masked)
-                downsample_f = downsample_f.permute(0, 2, 3, 1).contiguous().reshape(-1,2*C)  # (B*h*w, 2*C)
+                # shared encoder
+                emb = self._scale_emb(scale, f_dct_masked.size(0), f_dct_masked.device)            # (N, D)
+                h   = self.enc_adapter(f_dct_masked, emb)                   # (N, C, 16, 16)
+                h = self.enc_convs(h)                 # (N, C, 16, 16)
+
+                downsample_f = self.enc_downsamples[scale](h)      # (N, C, s, s)
+
+
+                downsample_f = rearrange(downsample_f, "b c h w -> (b h w) c")
                 
                 d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
                 d_no_grad.addmm_(downsample_f, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
@@ -227,10 +202,16 @@ class VectorQuantizer2(nn.Module):
                 mean_vq_loss += F.mse_loss(h_BChw.detach(),downsample_f).mul(self.beta)
                 h_BChw = h_BChw + (downsample_f - downsample_f.detach())
                 h_BChw = h_BChw.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
-                h_BChw = self.deconv_blocks[scale](h_BChw)  # (B, C, H, W)
+
+
+                # h_BChw: (B, C, H, W)  with H=W=s for this scale
+                h_BC16 = self.dec_upsample(h_BChw)                 # (B, C, 16, 16)
+                emb = self._scale_emb(scale, h_BChw.size(0), h_BChw.device)              # (B, emb_dim)
+                h_BC16 = self.dec_adapter(h_BC16, emb)             # (B, C, 16, 16)
+                h_BChw = self.dec_convs(h_BC16)     
                 
+
                 h_BChw = self.quant_resi[si/(SN-1)](h_BChw)
-                
                 f_hat = f_hat + h_BChw
                 
                 
