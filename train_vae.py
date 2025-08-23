@@ -64,7 +64,7 @@ def main():
         logger.info(f"Experiment directory created at {args.default_root_dir}")
 
         import wandb
-        wandb_project = "VQVAE_VAR_beta1_batch12"
+        wandb_project = "block_wise_vqvae_batch12_beta1"
         wandb.init(
             project=wandb_project,
             #name=os.path.basename(os.path.normpath(args.default_root_dir)),
@@ -190,7 +190,7 @@ def main():
 
             if _type == "image":
                 x_recon, usage, flat_frames_recon, vae_loss_dict = vqvae(x, global_step, image_disc=image_disc)
-            g_loss = vae_loss_dict['recon_loss'] + vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']
+            g_loss = vae_loss_dict['recon_loss'] + 0.2*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+0.1*vae_loss_dict['perceptual_loss']
             
             opt_vae.zero_grad()
             g_loss.backward()
@@ -267,7 +267,7 @@ def main():
                 for key, value in avg_loss_dict.items():
                     wandb.log({key: value}, step=global_step)
                 # writing logs
-                logger.info(f'global_step={global_step}, vq_loss={avg_loss_dict.get("vq_loss",0):.4f}, recon_loss={avg_loss_dict.get("recon_loss",0):.4f},logit_r={avg_loss_dict.get("train/logits_image_real",0):.4f}, logit_f={avg_loss_dict.get("train/logits_image_fake",0):.4f}, L_disc={avg_loss_dict.get("train/d_image_loss",0):.4f}, iter_speed={iter_speed:.2f}s,usage={usage}')
+                logger.info(f'global_step={global_step}, vq_loss={avg_loss_dict.get("vq_loss",0):.4f}, recon_loss={avg_loss_dict.get("recon_loss",0):.4f},perceptual_loss={avg_loss_dict.get("perceptual_loss",0):.4f},logit_r={avg_loss_dict.get("train/logits_image_real",0):.4f}, logit_f={avg_loss_dict.get("train/logits_image_fake",0):.4f}, L_disc={avg_loss_dict.get("train/d_image_loss",0):.4f}, iter_speed={iter_speed:.2f}s')
             start_time = time.time()
         
         if (global_step+1) % args.ckpt_every == 0 and global_step != init_step:
