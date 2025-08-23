@@ -14,8 +14,10 @@ from .quant import VectorQuantizer2
 import argparse
 from torch import Tensor, nn
 from bitvae.modules import adopt_weight
+
 from torchmetrics.image import FrechetInceptionDistance
 import torchvision.models as models
+
 
 
 def swish(x: Tensor) -> Tensor:
