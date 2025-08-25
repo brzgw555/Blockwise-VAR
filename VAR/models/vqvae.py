@@ -36,15 +36,17 @@ class PerceptualLoss(nn.Module):
     """
     def __init__(self):
         super().__init__()
-        vgg=models.vgg16(pretrained=True).features.eval()
+        vgg=models.vgg19(pretrained=True).features.eval()
         for param in vgg.parameters():
             param.requires_grad=False
         self.vgg_layers=nn.ModuleList([
             vgg[:4],  # relu1_2
             vgg[4:9],  # relu2_2
-            vgg[9:16],  # relu3_3
+            vgg[9:18],  # relu3_4
+            vgg[18:27], # relu4_4
         
         ])
+        self.weights=[0.1,0.2,0.4,0.3] # weights for each layer's loss
 
     def forward(self,x,x_recon):
         """
@@ -54,7 +56,10 @@ class PerceptualLoss(nn.Module):
         for i,model in enumerate(self.vgg_layers):
             x=model(x)
             x_recon=model(x_recon)
-            perceptual_loss+=nn.functional.mse_loss(x,x_recon)
+            if i < 2:
+                perceptual_loss+=nn.functional.mse_loss(x,x_recon)*self.weights[i]
+            else:
+                perceptual_loss+=nn.functional.l1_loss(x,x_recon)*self.weights[i]
 
         return perceptual_loss
 
@@ -136,7 +141,7 @@ class VQVAE(nn.Module):
             
             'recon_loss': recon_loss,
             'vq_loss': vq_loss,
-            'perceptual_loss': perceptual_loss,
+            'perceptual_loss':perceptual_loss,
             
             
         }
