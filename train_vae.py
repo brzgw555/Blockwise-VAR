@@ -73,7 +73,7 @@ def main():
             #name=os.path.basename(os.path.normpath(args.default_root_dir)),
             dir=args.default_root_dir,
             config=args,
-            mode="offline" #if args.debug else "online"
+            mode="online" #if args.debug else "online"
         )
     else:
         logger = create_logger(None)
@@ -83,6 +83,7 @@ def main():
     dataloaders = data.train_dataloader()
     dataloader_iters = [iter(loader) for loader in dataloaders]
     data_epochs = [0 for _ in dataloaders]
+    epoch_num=0
     
     # init model    
     vqvae = vqvae_model(args).to(device)
@@ -166,6 +167,7 @@ def main():
             except StopIteration:
                 data_epochs[idx] += 1
                 logger.info(f"Reset the {idx}th dataloader as epoch {data_epochs[idx]}")
+                epoch_num+=1
                 dataloaders[idx].sampler.set_epoch(data_epochs[idx])
                 dataloader_iters[idx] = iter(dataloaders[idx]) # update dataloader iter
                 _batch = next(dataloader_iters[idx])
@@ -194,8 +196,12 @@ def main():
 
             if _type == "image":
                 x_recon, usage, flat_frames_recon, vae_loss_dict = vqvae(x, global_step, image_disc=image_disc)
-            g_loss = vae_loss_dict['recon_loss'] + 0.2*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+0.1*vae_loss_dict['perceptual_loss']
-            
+                if global_step<50000:
+                    g_loss = 0.1*vae_loss_dict['recon_loss'] + vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+vae_loss_dict['perceptual_loss']
+                elif global_step<100000 and global_step>=50000:
+                    g_loss = 0.1*vae_loss_dict['recon_loss'] + 0.25*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+3*vae_loss_dict['perceptual_loss']
+                else:
+                    g_loss = 0.1*vae_loss_dict['recon_loss'] + 0.2*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+5*vae_loss_dict['perceptual_loss']
             opt_vae.zero_grad()
             g_loss.backward()
 

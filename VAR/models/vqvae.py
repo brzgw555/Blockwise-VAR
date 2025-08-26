@@ -17,6 +17,7 @@ from bitvae.modules import adopt_weight
 
 from torchmetrics.image import FrechetInceptionDistance
 import torchvision.models as models
+import lpips
 
 
 
@@ -29,51 +30,7 @@ def swish(x: Tensor) -> Tensor:
         return (x*torch.sigmoid(x)).to(device=device)
 
 
-class PerceptualLoss(nn.Module):
-    """
-    Perceptual loss , using pre-trained VGG16.
-    
-    """
-    def __init__(self):
-        super().__init__()
-        vgg=models.vgg19(pretrained=True).features.eval()
-        for param in vgg.parameters():
-            param.requires_grad=False
-        self.vgg_layers=nn.ModuleList([
-            vgg[:4],  # relu1_2
-            vgg[4:9],  # relu2_2
-            vgg[9:18],  # relu3_4
-            vgg[18:27], # relu4_4
-        
-        ])
-        self.weights=[0.1,0.2,0.4,0.3] # weights for each layer's loss
 
-    def forward(self,x,x_recon):
-        """
-        x,x_recon: B3HW , range [-1,1]
-        """
-        perceptual_loss: torch.Tensor = 0.0
-        for i,model in enumerate(self.vgg_layers):
-            x=model(x)
-            x_recon=model(x_recon)
-            if i < 2:
-                perceptual_loss+=nn.functional.mse_loss(x,x_recon)*self.weights[i]
-            else:
-                perceptual_loss+=nn.functional.l1_loss(x,x_recon)*self.weights[i]
-
-        return perceptual_loss
-
-def process_for_perceptualloss(x,device):
-    """
-    x: B3HW,range [-1,1]
-    return: B3HW,range [0,1]
-    normalized with imagenet mean and std
-    """
-    x=(x+1.0)/2.0
-    x_mean=torch.tensor([0.485, 0.456, 0.406],device=device).view(1,3,1,1)
-    x_std=torch.tensor([0.229, 0.224, 0.225],device=device).view(1,3,1,1)
-    x=(x-x_mean)/x_std
-    return x
 
 
 class VQVAE(nn.Module):
@@ -93,7 +50,9 @@ class VQVAE(nn.Module):
         self.v_patch_nums=(1,2,4,6,8,10,13,16)# number of patches for each scale, h_{1 to K} = w_{1 to K} = v_patch_nums[k]
         self.args=args
         self.image_gan_weight=args.image_gan_weight
-        self.perceptual_loss=PerceptualLoss()
+        self.perceptual_loss=lpips.LPIPS(net='vgg',spatial=False)
+        for p in self.perceptual_loss.parameters():
+            p.requires_grad = False
         
         
          
@@ -128,11 +87,10 @@ class VQVAE(nn.Module):
         VectorQuantizer2.forward
         f_hat, usages, vq_loss = self.quantize(self.quant_conv(self.encoder(inp)), ret_usages=ret_usages)
         x_recon=self.decoder(self.post_quant_conv(f_hat))
-        recon_loss= nn.functional.mse_loss(x_recon, inp, reduction='mean') #recon l2 loss
+        recon_loss= nn.functional.l1_loss(x_recon, inp, reduction='mean') #recon l1 loss
 
-        x_process=process_for_perceptualloss(inp,device=inp.device)
-        x_recon_process=process_for_perceptualloss(x_recon,device=inp.device)
-        perceptual_loss=self.perceptual_loss(x_process,x_recon_process)
+        with torch.no_grad():
+            perceptual_loss=self.perceptual_loss(x_recon, inp).mean()
 
 
       
