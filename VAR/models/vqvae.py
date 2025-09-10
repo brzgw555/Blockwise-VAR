@@ -72,7 +72,7 @@ class VQVAE(nn.Module):
         self.vocab_size = args.vocab_size
         self.downsample = 2 ** (len(ddconfig['ch_mult'])-1)
         self.quantize: VectorQuantizer2 = VectorQuantizer2(
-            vocab_size=args.vocab_size, Cvae=2*self.Cvae, using_znorm=self.using_znorm, beta=self.beta,
+            vocab_size=args.vocab_size, Cvae=self.Cvae, using_znorm=self.using_znorm, beta=self.beta,
             default_qresi_counts=self.default_qresi_counts, v_patch_nums=self.v_patch_nums, quant_resi=self.quant_resi, share_quant_resi=args.share_quant_resi,
         )
         self.quant_conv = torch.nn.Conv2d(self.Cvae, self.Cvae, self.quant_conv_ks, stride=1, padding=self.quant_conv_ks//2)
@@ -85,21 +85,22 @@ class VQVAE(nn.Module):
     # ===================== `forward` is only used in VAE training =====================
     def forward(self, inp, global_step,image_disc,ret_usages=False):   # -> rec_B3HW, idx_N, loss
         VectorQuantizer2.forward
-        f_hat, usages, vq_loss = self.quantize(self.quant_conv(self.encoder(inp)), ret_usages=ret_usages)
+        f_hat, usages, vq_loss ,entropy_loss = self.quantize(self.quant_conv(self.encoder(inp)), ret_usages=ret_usages)
         x_recon=self.decoder(self.post_quant_conv(f_hat))
         recon_loss= nn.functional.l1_loss(x_recon, inp, reduction='mean') #recon l1 loss
 
-        with torch.no_grad():
-            perceptual_loss=self.perceptual_loss(x_recon, inp).mean()
+        
+        perceptual_loss=self.perceptual_loss(x_recon, inp).mean()
 
 
       
-        
+        # collect loss
         loss_dict={
             
             'recon_loss': recon_loss,
             'vq_loss': vq_loss,
             'perceptual_loss':perceptual_loss,
+            'entropy_loss':entropy_loss
             
             
         }
@@ -111,7 +112,7 @@ class VQVAE(nn.Module):
             loss_dict["train/g_image_loss"] = g_image_loss
 
         
-        return x_recon, usages, None,loss_dict
+        return x_recon, usages, None , loss_dict
     # ===================== `forward` is only used in VAE training =====================
     
     def fhat_to_img(self, f_hat: torch.Tensor):

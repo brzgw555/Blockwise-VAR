@@ -10,7 +10,7 @@ import torch.distributed as tdist
 import torch.multiprocessing as mp
 
 __rank, __local_rank, __world_size, __device = 0, 0, 1, 'cuda' if torch.cuda.is_available() else 'cpu'
-__initialized = False
+__initialized = True
 
 
 def initialized():

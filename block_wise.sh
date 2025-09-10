@@ -3,7 +3,7 @@
 # ==============================================
 # 
 # ==============================================
-export CUDA_VISIBLE_DEVICES=0,1,2,3  # GPU pointed
+export CUDA_VISIBLE_DEVICES=4,5,6,7  # GPU pointed
 NUM_NODES=1                          # node number
 GPUS_PER_NODE=4                      # GPU per node
 MASTER_ADDR="localhost"              # master node address
@@ -45,13 +45,13 @@ FIXED_ARGS="--patch_size 16 \
     --vocab_size 4096 \
     --z_channels 32 \
     --share_quant_resi 4 \
-    --optim_type AdamW --lr 4.5e-6 --disable_sch --dis_lr_multiplier 1 \
+    --optim_type AdamW --lr 1e-5 --disable_sch --dis_lr_multiplier 1 \
     --resolution 256 256 --batch_size 16 \
     --dataset_list imagenet --dataaug resizecrop \
     --disc_layers 3 --discriminator_iter_start 50000 \
     --l1_weight 1 --perceptual_weight 1 --image_disc_weight 1 --image_gan_weight 0.3  --gan_feat_weight 0 --lfq_weight 4 \
     --entropy_loss_weight 0.1 --diversity_gamma 1 \
-    --default_root_dir block_wise_results \
+    --default_root_dir block_wise_results_8scale_ema_retrain_add \
     --new_quant --lr_drop 450000 \
     --max_steps 500000 \
     --log_every 20 --ckpt_every 10000 --visu_every 10000 \
@@ -80,9 +80,9 @@ torchrun \
     train_vae.py --num_workers $NUM_WORKERS \
     $FIXED_ARGS \
     --max_steps 500000 \
-    --log_every 10 \
+    --log_every 100 \
     --ckpt_every 20000 \
     --visu_every 10000 \
     --ch 160 \
-    --batch_size 12 \
-    --discriminator_iter_start 200000
+    --batch_size 30 \
+    --discriminator_iter_start 300000

@@ -110,6 +110,8 @@ def main():
     train_iters = args.max_steps
     warmup_steps = args.warmup_steps
     warmup_lr_init = args.warmup_lr_init
+    accumulation_steps = 1
+    accum_step_counter = 0
 
     if args.disable_sch:
         # scheduler_list = [None, None]
@@ -149,6 +151,11 @@ def main():
     if args.multiscale_training:
         scale_idx_list = np.load('bitvae/utils/random_numbers.npy') # load pre-computed scale_idx in each iteration
 
+    grad_accum = {}
+    for param in vqvae.parameters():
+        if param.requires_grad:
+            grad_accum[param] = torch.zeros_like(param, device=param.device)
+
     start_time = time.time()
     for global_step in range(init_step, args.max_steps):
         loss_dicts = []
@@ -167,6 +174,10 @@ def main():
             except StopIteration:
                 data_epochs[idx] += 1
                 logger.info(f"Reset the {idx}th dataloader as epoch {data_epochs[idx]}")
+                epoch_coverage=vqvae.module.quantize.get_epoch_codebook_usage()
+                vqvae.module.quantize.reset_epoch_usage()
+                if rank==0:
+                    logger.info(f"epoch codebook coverage: {epoch_coverage*100:.2f}%")
                 epoch_num+=1
                 dataloaders[idx].sampler.set_epoch(data_epochs[idx])
                 dataloader_iters[idx] = iter(dataloaders[idx]) # update dataloader iter
@@ -196,26 +207,56 @@ def main():
 
             if _type == "image":
                 x_recon, usage, flat_frames_recon, vae_loss_dict = vqvae(x, global_step, image_disc=image_disc)
-                if global_step<50000:
-                    g_loss = 0.1*vae_loss_dict['recon_loss'] + vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+vae_loss_dict['perceptual_loss']
-                elif global_step<100000 and global_step>=50000:
-                    g_loss = 0.1*vae_loss_dict['recon_loss'] + 0.25*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+3*vae_loss_dict['perceptual_loss']
-                else:
-                    g_loss = 0.1*vae_loss_dict['recon_loss'] + 0.2*vae_loss_dict['vq_loss']+vae_loss_dict['train/g_image_loss']+5*vae_loss_dict['perceptual_loss']
-            opt_vae.zero_grad()
-            g_loss.backward()
+         
+                
+                g_loss =vae_loss_dict['recon_loss'] + 0.8*vae_loss_dict['vq_loss']+0.8*vae_loss_dict['train/g_image_loss']+vae_loss_dict['perceptual_loss']+vae_loss_dict['entropy_loss']
+            
+            g_loss.backward() 
+    
+    
+            for param in vqvae.parameters():
+                if param.requires_grad and param.grad is not None:
+                    grad_accum[param] += param.grad 
+                    param.grad = None 
+    
+    
+            accum_step_counter += 1
+            if accum_step_counter % accumulation_steps == 0:
+        # --------------------------
 
-            if not ((global_step+1) % args.ckpt_every) == 0:
-                if args.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(vqvae.parameters(), args.max_grad_norm)
-                if not sch_vae is None:
-                    sch_vae.step(global_step)
-                elif args.lr_drop and global_step in args.lr_drop:
-                    logger.info(f"multiply lr of VQ-VAE by {args.lr_drop_rate} at iteration {global_step}")
-                    for opt_vae_param_group in opt_vae.param_groups:
-                        opt_vae_param_group["lr"] = opt_vae_param_group["lr"] * args.lr_drop_rate
-                opt_vae.step()
-            opt_vae.zero_grad() # free memory
+        # --------------------------
+                for param in vqvae.parameters():
+                    if param.requires_grad:
+                        grad_accum[param] = grad_accum[param] / accumulation_steps  # ∇L_total = (∑∇Lᵢ)/8
+            
+        
+                for param in vqvae.parameters():
+                    if param.requires_grad:
+                        param.grad = grad_accum[param]
+                
+                if not ((global_step+1) % args.ckpt_every) == 0:
+                    if args.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(vqvae.parameters(), args.max_grad_norm)
+                    if not sch_vae is None:
+                        sch_vae.step(global_step)
+                    elif args.lr_drop and global_step in args.lr_drop:
+                        logger.info(f"multiply lr of VQ-VAE by {args.lr_drop_rate} at iteration {global_step}")
+                        for opt_vae_param_group in opt_vae.param_groups:
+                            opt_vae_param_group["lr"] = opt_vae_param_group["lr"] * args.lr_drop_rate
+                    opt_vae.step()
+        
+                opt_vae.zero_grad()
+                for param in grad_accum:
+                    grad_accum[param].zero_()
+        
+        
+                accum_step_counter = 0
+            
+            
+            #opt_vae.zero_grad()
+            #g_loss.backward()
+
+
 
             disc_loss_dict = {}
             # disc_factor = 0 before (args.discriminator_iter_start - args.disc_pretrain_iter)
@@ -267,6 +308,14 @@ def main():
             else:
                 reduced_loss_dict = {}
             loss_dicts.append(reduced_loss_dict)
+        
+        if ((global_step + 1) % args.ckpt_every) == 0 and accum_step_counter != 0:
+            opt_vae.zero_grad()
+            for param in grad_accum:
+                grad_accum[param].zero_()
+            accum_step_counter = 0 
+
+
 
         if (global_step+1) % args.log_every == 0:
             avg_loss_dict = average_losses(loss_dicts)
@@ -277,7 +326,7 @@ def main():
                 for key, value in avg_loss_dict.items():
                     wandb.log({key: value}, step=global_step)
                 # writing logs
-                logger.info(f'global_step={global_step}, vq_loss={avg_loss_dict.get("vq_loss",0):.4f}, recon_loss={avg_loss_dict.get("recon_loss",0):.4f},perceptual_loss={avg_loss_dict.get("perceptual_loss",0):.4f},logit_r={avg_loss_dict.get("train/logits_image_real",0):.4f}, logit_f={avg_loss_dict.get("train/logits_image_fake",0):.4f}, L_disc={avg_loss_dict.get("train/d_image_loss",0):.4f}, iter_speed={iter_speed:.2f}s')
+                logger.info(f'global_step={global_step}, vq_loss={avg_loss_dict.get("vq_loss",0):.4f}, recon_loss={avg_loss_dict.get("recon_loss",0):.4f},perceptual_loss={avg_loss_dict.get("perceptual_loss",0):.4f},entropy_loss={avg_loss_dict.get("entropy_loss",0):4f},logit_r={avg_loss_dict.get("train/logits_image_real",0):.4f}, logit_f={avg_loss_dict.get("train/logits_image_fake",0):.4f}, L_disc={avg_loss_dict.get("train/d_image_loss",0):.4f}, iter_speed={iter_speed:.2f}s , usage={usage}')
             start_time = time.time()
         
         if (global_step+1) % args.ckpt_every == 0 and global_step != init_step:
