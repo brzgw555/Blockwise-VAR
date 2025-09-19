@@ -209,18 +209,20 @@ class VectorQuantizer2(nn.Module):
         self.record_hit = 0
         
         self.beta: float = beta
+        
         #self.embedding = nn.Embedding(self.vocab_size, self.Cvae)
         
         self.embedding = EMAEmbedding(vocab_size, Cvae, ema_decay, ema_eps, l2_norm=l2_norm)
         self.ema_decay = ema_decay
         self.eps=ema_eps
         self.entropy_loss_weight = 1.0
-        self.l2_norm = l2_norm
-
+        self.l2_norm = l2_norm # using l2_norm
+ 
         
         # only used for progressive training of VAR (not supported yet, will be tested and supported in the future)
         self.prog_si = -1   # progressive training: not supported yet, prog_si always -1
     
+    # defination for conv and deconv
     def conv_transpose(self,in_ch,out_ch):
             return nn.ConvTranspose2d(in_ch , out_ch , kernel_size=4, stride=2, padding=1, bias=True)
     
@@ -235,6 +237,7 @@ class VectorQuantizer2(nn.Module):
         id=self.scale.index(label)
         return nn.ConvTranspose2d(in_ch , out_ch , kernel_size=self.conv_params[id][0], stride=self.conv_params[id][1], padding=self.conv_params[id][2], bias=True)
     
+    # initialization for embedding
     def eini(self, eini):
         if eini > 0: nn.init.trunc_normal_(self.embedding.weight.data, std=eini)
         elif eini < 0: self.embedding.weight.data.uniform_(-abs(eini) / self.vocab_size, abs(eini) / self.vocab_size)
@@ -248,12 +251,14 @@ class VectorQuantizer2(nn.Module):
     def extra_repr(self) -> str:
         return f'{self.v_patch_nums}, znorm={self.using_znorm}, beta={self.beta}  |  S={len(self.v_patch_nums)}, quant_resi={self.quant_resi_ratio}'
     
-
+    
+    # get codebook usage
     def get_codebook_usage(self):
         total_hits =self.ema_vocab_hit_SV.sum(dim=0)
         used_codes = (total_hits > 0).sum().item() 
         coverage = used_codes / self.vocab_size
         return coverage
+    
     def reset_epoch_usage(self):
         self.epoch_ema_vocab_hit_SV.zero_()
         
@@ -263,6 +268,8 @@ class VectorQuantizer2(nn.Module):
         coverage = used_codes / self.vocab_size
         return coverage
     
+
+
     @staticmethod
     # compute entropy loss for codebook usage
     def compute_entropy_loss(affinity, loss_type="softmax", temperature=0.01):
@@ -289,6 +296,7 @@ class VectorQuantizer2(nn.Module):
         B, C, H, W = f_BChw.shape
         f_no_grad = f_BChw.detach()
         
+
         # f_rest = f_no_grad.clone()
         f_hat = torch.zeros_like(f_BChw)
 
@@ -305,6 +313,10 @@ class VectorQuantizer2(nn.Module):
             # f_no_grad_split = split_into_8x8_blocks(f_no_grad) 
                 
             f_split_dct= dct_2d(f_split, norm='ortho')
+            if self.l2_norm:
+                embedding_norm = F.normalize(self.embedding.weight.data, p=2, dim=-1, eps=1e-6)
+            else:
+                embedding_norm = self.embedding.weight.data
             
             for si, pn in enumerate(self.v_patch_nums): # from low to high
                 dct_range= si+1
@@ -330,7 +342,7 @@ class VectorQuantizer2(nn.Module):
                 
                     downsample_f = F.normalize(downsample_f, p=2, dim=-1, eps=1e-6)
                     
-                    embedding_norm = F.normalize(self.embedding.weight.data, p=2, dim=-1, eps=1e-6)
+                    
                 else:
                     embedding_norm = self.embedding.weight.data 
                 
@@ -423,6 +435,7 @@ class VectorQuantizer2(nn.Module):
                 if last_one: ls_f_hat_BChw = f_hat
                 else: ls_f_hat_BChw.append(f_hat.clone())
         else:
+
             # WARNING: this is not the case in VQ-VAE training or inference (we'll interpolate every token map to the max H W, like above)
             # WARNING: this should only be used for experimental purpose
             f_hat = ms_h_BChw[0].new_zeros(B, self.Cvae, self.v_patch_nums[0], self.v_patch_nums[0], dtype=torch.float32)

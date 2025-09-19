@@ -31,12 +31,17 @@ def restore_from_8x8_blocks(blocks):
     x = rearrange(blocks, "b c nh nw bh bw -> b c (nh bh) (nw bw)")
     return x
 class EMAEmbedding(nn.Module):
-    def __init__(self, num_tokens, codebook_dim, decay=0.99, eps=1e-5):
+    def __init__(self, num_tokens, codebook_dim, decay=0.99, eps=1e-5, l2_norm=True):
         super().__init__()
         self.decay = decay
-        self.eps = eps        
+        self.eps = eps 
+        self.l2_norm = l2_norm       
         # init
         weight = torch.randn(num_tokens, codebook_dim)
+        # use l2_norm for initialization
+        if self.l2_norm:
+            
+            weight = F.normalize(weight, p=2, dim=-1, eps=1e-6)
         self.weight = nn.Parameter(weight, requires_grad=False)
         # EMA accumulated cluster size
         self.cluster_size = nn.Parameter(torch.zeros(num_tokens), requires_grad=False)
@@ -57,7 +62,7 @@ class EMAEmbedding(nn.Module):
         self.embed_avg.data.mul_(self.decay).add_(new_embed_avg, alpha=1 - self.decay)
 
     def weight_update(self, num_tokens):
-        
+        # update weight
         n = self.cluster_size.sum()
         
         smoothed_cluster_size = (
@@ -65,13 +70,18 @@ class EMAEmbedding(nn.Module):
             )
         
         embed_normalized = self.embed_avg / smoothed_cluster_size.unsqueeze(1)
+        if self.l2_norm:
+            embed_normalized = F.normalize(embed_normalized, p=2, dim=-1, eps=1e-6)
+        
+    
         self.weight.data.copy_(embed_normalized)
+
 class VectorQuantizer2(nn.Module):
     
     def __init__(
         self, vocab_size, Cvae, using_znorm, beta: float = 1.0,
         default_qresi_counts=0, v_patch_nums=None, quant_resi=0.5, share_quant_resi=4, dct_conv_layers=4,  # share_quant_resi: args.qsr
-        ema_decay=0.9,ema_eps=1e-5
+        ema_decay: float =0.99,ema_eps: float =1e-5 , l2_norm=True
     ):
         super().__init__()
         self.vocab_size: int = vocab_size
@@ -82,8 +92,8 @@ class VectorQuantizer2(nn.Module):
         self.scale=['1', '2', '4', '6', '8', '10', '13', '16']
         self.conv_params=[(2,2,0),(3,2,1),(3,2,1),(5,2,0),(3,2,1),(7,1,0),(4,1,0),(3,1,1)]  #(kernel_size,stride,padding)
         num_convs_map = {'1': 1, '2': 3, '4': 2, '6': 1, '8': 1, '10': 1, '13': 1, '16': 1}
-        self.ema_update_step=8
-        self.ema_step_num=0
+        # self.ema_update_step=8
+        # self.ema_step_num=0
 
         # ----------------- helpers -----------------
         def _conv3x3(in_ch, out_ch, bias=True):
@@ -164,13 +174,23 @@ class VectorQuantizer2(nn.Module):
         
         self.beta: float = beta
         self.embedding = EMAEmbedding(self.vocab_size, self.Cvae, ema_decay ,ema_eps)
+        self.ema_decay = ema_decay
+        self.eps=ema_eps
+        self.entropy_loss_weight = 1.0
+        self.l2_norm = l2_norm
         
         # only used for progressive training of VAR (not supported yet, will be tested and supported in the future)
         self.prog_si = -1   # progressive training: not supported yet, prog_si always -1
+
     
     def eini(self, eini):
         if eini > 0: nn.init.trunc_normal_(self.embedding.weight.data, std=eini)
         elif eini < 0: self.embedding.weight.data.uniform_(-abs(eini) / self.vocab_size, abs(eini) / self.vocab_size)
+        if self.l2_norm:
+            with torch.no_grad():
+                self.embedding.weight.data = F.normalize(
+                    self.embedding.weight.data, p=2, dim=-1, eps=1e-6
+                )
     
     def extra_repr(self) -> str:
         return f'{self.v_patch_nums}, znorm={self.using_znorm}, beta={self.beta}  |  S={len(self.v_patch_nums)}, quant_resi={self.quant_resi_ratio}'
@@ -195,6 +215,24 @@ class VectorQuantizer2(nn.Module):
         coverage = used_codes / self.vocab_size
         return coverage
 
+
+    @staticmethod
+    # compute entropy loss for codebook usage
+    def compute_entropy_loss(affinity, loss_type="softmax", temperature=0.01):
+        flat_affinity = affinity.reshape(-1, affinity.shape[-1])
+        flat_affinity /= temperature
+        probs = F.softmax(flat_affinity, dim=-1)
+        log_probs = F.log_softmax(flat_affinity + 1e-5, dim=-1)
+        if loss_type == "softmax":
+            target_probs = probs
+        else:
+            raise ValueError("Entropy loss {} not supported".format(loss_type))
+        avg_probs = torch.mean(target_probs, dim=0)
+        avg_entropy = - torch.sum(avg_probs * torch.log(avg_probs + 1e-5))
+        sample_entropy = - torch.mean(torch.sum(target_probs * log_probs, dim=-1))
+        loss = sample_entropy - avg_entropy
+        return loss
+
     
     # ===================== `forward` is only used in VAE training =====================
     def forward(self, f_BChw: torch.Tensor, ret_usages=False) -> Tuple[torch.Tensor, List[float], torch.Tensor]:
@@ -211,6 +249,7 @@ class VectorQuantizer2(nn.Module):
         
         with torch.cuda.amp.autocast(enabled=False):
             mean_vq_loss: torch.Tensor = 0.0
+            mean_entropy_loss: torch.Tensor = 0.0
             vocab_hit_V = torch.zeros(self.vocab_size, dtype=torch.float, device=f_BChw.device)
             SN = len(self.v_patch_nums)
                            
@@ -218,6 +257,11 @@ class VectorQuantizer2(nn.Module):
             # f_no_grad_split = split_into_8x8_blocks(f_no_grad) 
                 
             f_split_dct= dct_2d(f_split, norm="ortho")
+            if self.l2_norm: # using l2_norm 
+                
+                embedding_norm = F.normalize(self.embedding.weight.data, p=2, dim=-1, eps=1e-6)
+            else:
+                embedding_norm = self.embedding.weight.data
             
             for si, pn in enumerate(self.v_patch_nums): # from low to high
                 dct_range= si+1
@@ -243,9 +287,18 @@ class VectorQuantizer2(nn.Module):
 
 
                 downsample_f = rearrange(downsample_f, "b c h w -> (b h w) c")
+                if self.l2_norm: # using l2_norm 
                 
-                d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
-                d_no_grad.addmm_(downsample_f, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
+                    downsample_f = F.normalize(downsample_f, p=2, dim=-1, eps=1e-6)
+                    
+
+                
+                d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(embedding_norm.square(), dim=1, keepdim=False)
+                d_no_grad.addmm_(downsample_f, embedding_norm.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
+
+                # calculate entropy loss
+                mean_entropy_loss +=self.compute_entropy_loss(-d_no_grad, loss_type="softmax", temperature=0.01)*self.entropy_loss_weight
+                
                 idx_N = torch.argmin(d_no_grad, dim=1)
                 
                 hit_V = idx_N.bincount(minlength=self.vocab_size).float()
@@ -264,7 +317,7 @@ class VectorQuantizer2(nn.Module):
                 downsample_f = downsample_f.reshape(B, pn ,pn ,C)
                 idx_Bhw = idx_N.view(B, pn ,pn)
                 h_BChw = self.embedding(idx_Bhw)
-                mean_vq_loss += F.mse_loss(h_BChw,downsample_f.detach())
+                # mean_vq_loss += F.mse_loss(h_BChw,downsample_f.detach())
                 mean_vq_loss += F.mse_loss(h_BChw.detach(),downsample_f).mul(self.beta)
                 h_BChw = h_BChw + (downsample_f - downsample_f.detach())
                 h_BChw = h_BChw.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
@@ -298,7 +351,7 @@ class VectorQuantizer2(nn.Module):
             
                 self.embedding.cluster_size_ema_update(current_batch_cluster_size)
                 self.embedding.embed_avg_ema_update(current_batch_embed_sum)
-                self.ema_step_num+=1
+                # self.ema_step_num+=1
             
                 self.embedding.weight_update(self.vocab_size)
                 
@@ -306,6 +359,7 @@ class VectorQuantizer2(nn.Module):
                 
             
             mean_vq_loss *=1. / SN
+            mean_entropy_loss *=1. / SN
 
 
 
@@ -320,7 +374,7 @@ class VectorQuantizer2(nn.Module):
         # margin = pn*pn / 100
         # if ret_usages: usages = [(self.ema_vocab_hit_SV[si] >= margin).float().mean().item() * 100 for si, pn in enumerate(self.v_patch_nums)]
         usages=self.get_codebook_usage()
-        return f_hat, usages, mean_vq_loss
+        return f_hat, usages, mean_vq_loss , mean_entropy_loss
     # ===================== `forward` is only used in VAE training =====================
     
     def embed_to_fhat(self, ms_h_BChw: List[torch.Tensor], all_to_max_scale=True, last_one=False) -> Union[List[torch.Tensor], torch.Tensor]:
