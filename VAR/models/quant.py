@@ -343,8 +343,7 @@ class VectorQuantizer2(nn.Module):
                     downsample_f = F.normalize(downsample_f, p=2, dim=-1, eps=1e-6)
                     
                     
-                else:
-                    embedding_norm = self.embedding.weight.data 
+          
                 
                 d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(embedding_norm.square(), dim=1, keepdim=False)
                 d_no_grad.addmm_(downsample_f, embedding_norm.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
@@ -428,8 +427,7 @@ class VectorQuantizer2(nn.Module):
             f_hat = ms_h_BChw[0].new_zeros(B, self.Cvae, H, W, dtype=torch.float32)
             for si, pn in enumerate(self.v_patch_nums): # from small to large
                 h_BChw = ms_h_BChw[si]
-                if si < len(self.v_patch_nums) - 1:
-                    h_BChw = F.interpolate(h_BChw, size=(H, W), mode='bicubic')
+                h_BChw= self.deconv_blocks[self.scale[si]](h_BChw)
                 h_BChw = self.quant_resi[si/(SN-1)](h_BChw)
                 f_hat.add_(h_BChw)
                 if last_one: ls_f_hat_BChw = f_hat
@@ -460,23 +458,56 @@ class VectorQuantizer2(nn.Module):
         assert patch_hws[-1][0] == H and patch_hws[-1][1] == W, f'{patch_hws[-1]=} != ({H=}, {W=})'
         
         SN = len(patch_hws)
+        f_split=split_into_8x8_blocks(f_BChw) #(B,C,H,W) -> (B,C, num_blocks_h, num_blocks_w,8, 8)
+
+        f_split_dct= dct_2d(f_split, norm='ortho')
         for si, (ph, pw) in enumerate(patch_hws): # from small to large
             if 0 <= self.prog_si < si: break    # progressive training: not supported yet, prog_si always -1
-            # find the nearest embedding
-            z_NC = F.interpolate(f_rest, size=(ph, pw), mode='area').permute(0, 2, 3, 1).reshape(-1, C) if (si != SN-1) else f_rest.permute(0, 2, 3, 1).reshape(-1, C)
-            if self.using_znorm:
-                z_NC = F.normalize(z_NC, dim=-1)
-                idx_N = torch.argmax(z_NC @ F.normalize(self.embedding.weight.data.T, dim=0), dim=1)
-            else:
-                d_no_grad = torch.sum(z_NC.square(), dim=1, keepdim=True) + torch.sum(self.embedding.weight.data.square(), dim=1, keepdim=False)
-                d_no_grad.addmm_(z_NC, self.embedding.weight.data.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
-                idx_N = torch.argmin(d_no_grad, dim=1)
+            dct_range= si+1
+
+            f_dct_masked=torch.zeros_like(f_split)
+            f_dct_masked[:,:,:,:,:dct_range,:dct_range]=f_split_dct[:,:,:,:,:dct_range,:dct_range]
+            if si > 0:
+                f_dct_masked[:,:,:,:,:dct_range-1,:dct_range-1]=0
+            f_dct_masked = idct_2d(f_dct_masked, norm='ortho')
+            f_dct_masked = restore_from_8x8_blocks(f_dct_masked)
+
+                
             
-            idx_Bhw = idx_N.view(B, ph, pw)
-            h_BChw = F.interpolate(self.embedding(idx_Bhw).permute(0, 3, 1, 2), size=(H, W), mode='bicubic').contiguous() if (si != SN-1) else self.embedding(idx_Bhw).permute(0, 3, 1, 2).contiguous()
+            # find the nearest embedding
+            scale = self.scale[si]
+            downsample_f = self.conv_blocks[scale](f_dct_masked)
+            downsample_f = downsample_f.permute(0, 2, 3, 1).contiguous().reshape(-1,C)  # (B*h*w, 2*C)
+            if self.l2_norm: # using l2_norm 
+                
+                downsample_f = F.normalize(downsample_f, p=2, dim=-1, eps=1e-6)
+                    
+                    
+            
+            embedding_norm = self.embedding.weight.data 
+                
+            d_no_grad = torch.sum(downsample_f.square(), dim=1, keepdim=True) + torch.sum(embedding_norm.square(), dim=1, keepdim=False)
+            d_no_grad.addmm_(downsample_f, embedding_norm.T, alpha=-2, beta=1)  # (B*h*w, vocab_size)
+               
+               
+            idx_N = torch.argmin(d_no_grad, dim=1)
+                
+
+            downsample_f = downsample_f.reshape(B, ph ,pw ,C)
+            idx_Bhw = idx_N.view(B, ph ,pw)
+            h_BChw = self.embedding(idx_Bhw)
+
+            h_BChw = h_BChw.permute(0, 3, 1, 2).contiguous()  # (B, C, H, W)
+            h_BChw = self.deconv_blocks[scale](h_BChw)  # (B, C, H, W)
+                
             h_BChw = self.quant_resi[si/(SN-1)](h_BChw)
+                
             f_hat.add_(h_BChw)
-            f_rest.sub_(h_BChw)
+                
+                
+                
+
+
             f_hat_or_idx_Bl.append(f_hat.clone() if to_fhat else idx_N.reshape(B, ph*pw))
         
         return f_hat_or_idx_Bl
@@ -493,7 +524,7 @@ class VectorQuantizer2(nn.Module):
         pn_next: int = self.v_patch_nums[0]
         for si in range(SN-1):
             if self.prog_si == 0 or (0 <= self.prog_si-1 < si): break   # progressive training: not supported yet, prog_si always -1
-            h_BChw = F.interpolate(self.embedding(gt_ms_idx_Bl[si]).transpose_(1, 2).view(B, C, pn_next, pn_next), size=(H, W), mode='bicubic')
+            h_BChw = self.deconv_blocks[self.scale[si]](self.embedding(gt_ms_idx_Bl[si]).transpose_(1, 2).view(B, C, pn_next, pn_next))
             f_hat.add_(self.quant_resi[si/(SN-1)](h_BChw))
             pn_next = self.v_patch_nums[si+1]
             next_scales.append(F.interpolate(f_hat, size=(pn_next, pn_next), mode='area').view(B, C, -1).transpose(1, 2))
@@ -502,13 +533,13 @@ class VectorQuantizer2(nn.Module):
     # ===================== get_next_autoregressive_input: only used in VAR inference, for getting next step's input =====================
     def get_next_autoregressive_input(self, si: int, SN: int, f_hat: torch.Tensor, h_BChw: torch.Tensor) -> Tuple[Optional[torch.Tensor], torch.Tensor]: # only used in VAR inference
         HW = self.v_patch_nums[-1]
+        
+        up_h=self.deconv_blocks[self.scale[si]](h_BChw)
+        h = self.quant_resi[si/(SN-1)](up_h)     # conv after upsample
+        f_hat.add_(h)
         if si != SN-1:
-            h = self.quant_resi[si/(SN-1)](F.interpolate(h_BChw, size=(HW, HW), mode='bicubic'))     # conv after upsample
-            f_hat.add_(h)
             return f_hat, F.interpolate(f_hat, size=(self.v_patch_nums[si+1], self.v_patch_nums[si+1]), mode='area')
         else:
-            h = self.quant_resi[si/(SN-1)](h_BChw)
-            f_hat.add_(h)
             return f_hat, f_hat
 
 

@@ -24,7 +24,7 @@ class VAR(nn.Module):
         num_classes=1000, depth=16, embed_dim=1024, num_heads=16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
         norm_eps=1e-6, shared_aln=False, cond_drop_rate=0.1,
         attn_l2_norm=False,
-        patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),   # 10 steps by default
+        patch_nums=(1,2,4,6,8,10,13,16),   # 8 steps by default
         flash_if_available=True, fused_if_available=True,
     ):
         super().__init__()
@@ -298,7 +298,7 @@ class VARHF(VAR, PyTorchModelHubMixin):
         num_classes=1000, depth=16, embed_dim=1024, num_heads=16, mlp_ratio=4., drop_rate=0., attn_drop_rate=0., drop_path_rate=0.,
         norm_eps=1e-6, shared_aln=False, cond_drop_rate=0.1,
         attn_l2_norm=False,
-        patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),   # 10 steps by default
+        patch_nums=(1,2,4,6,8,10,13,16),   # 8 steps by default
         flash_if_available=True, fused_if_available=True,
     ):
         vae_local = VQVAE(**vae_kwargs)

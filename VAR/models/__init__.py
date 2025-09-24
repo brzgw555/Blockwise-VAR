@@ -8,7 +8,7 @@ from .vqvae import VQVAE
 
 def build_vae_var(
     # Shared args
-    device, patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),   # 10 steps by default
+    device, patch_nums=(1,2,4,6,8,10,13,16),   # 8 steps by default
     # VQVAE args
     V=4096, Cvae=32, ch=160, share_quant_resi=4,
     # VAR args
