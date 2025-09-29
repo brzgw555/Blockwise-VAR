@@ -11,11 +11,32 @@ from VAR.models import VAR, VQVAE, VectorQuantizer2
 from utils.amp_sc import AmpOptimizer
 from utils.misc import MetricLogger, TensorboardLogger
 import swanlab
-
+from torchmetrics.image import FrechetInceptionDistance
+import torchvision.transforms as T
 Ten = torch.Tensor
 FTen = torch.Tensor
 ITen = torch.LongTensor
 BTen = torch.BoolTensor
+
+seed=0
+torch.manual_seed(seed)
+
+def preprocess_for_fid(images, input_range="0_1"):
+    
+    # transform to [0,255]
+    if input_range == "-1_1":
+        images = (images + 1.0) * 127.5  # [-1,1] → [0,255]
+    elif input_range == "0_1":
+        images = images * 255.0  # [0,1] → [0,255]
+    
+    # uint8
+    images = images.to(torch.uint8)
+    
+    # Resize to 299x299
+    resize = T.Resize((299, 299), antialias=True)
+    images = resize(images)
+    
+    return images
 
 
 class VARTrainer(object):
@@ -42,6 +63,15 @@ class VARTrainer(object):
         self.L = sum(pn * pn for pn in patch_nums)
         self.last_l = patch_nums[-1] * patch_nums[-1]
         self.loss_weight = torch.ones(1, self.L, device=device) / self.L
+        #self.loss_weight[:,1:5] *= 10
+        #loss_shape=torch.zeros_like(torch.ones(1, self.L, device=device))
+        #idx = 0
+        #for pn in patch_nums:
+        #loss_shape[:, idx:idx+pn*pn] = 1/(pn*pn)
+            #idx+=pn*pn
+            
+        #loss_shape[0]*=1/(pn*pn)
+        #self.loss_weight = loss_shape / loss_shape.sum()
         
         self.patch_nums, self.resos = patch_nums, resos
         self.begin_ends = []
@@ -56,16 +86,24 @@ class VARTrainer(object):
     
     @torch.no_grad()
     def eval_ep(self, ld_val: DataLoader):
+        fid=FrechetInceptionDistance(feature=2048).to(dist.get_device())
+        fid.reset()
+        
+        
         tot = 0
         L_mean, L_tail, acc_mean, acc_tail = 0, 0, 0, 0
         stt = time.time()
         training = self.var_wo_ddp.training
         self.var_wo_ddp.eval()
+        fid_num=0
         for inp_B3HW, label_B in ld_val:
             B, V = label_B.shape[0], self.vae_local.vocab_size
             inp_B3HW = inp_B3HW.to(dist.get_device(), non_blocking=True)
+            
             label_B = label_B.to(dist.get_device(), non_blocking=True)
             
+
+
             gt_idx_Bl: List[ITen] = self.vae_local.img_to_idxBl(inp_B3HW)
             gt_BL = torch.cat(gt_idx_Bl, dim=1)
             x_BLCv_wo_first_l: Ten = self.quantize_local.idxBl_to_var_input(gt_idx_Bl)
@@ -77,14 +115,42 @@ class VARTrainer(object):
             acc_mean += (logits_BLV.data.argmax(dim=-1) == gt_BL).sum() * (100/gt_BL.shape[1])
             acc_tail += (logits_BLV.data[:, -self.last_l:].argmax(dim=-1) == gt_BL[:, -self.last_l:]).sum() * (100 / self.last_l)
             tot += B
+            
+            inp_true=preprocess_for_fid(inp_B3HW,input_range="-1_1")
+            fid.update(inp_true, real=True)
+            
+            inp_false=self.var_wo_ddp.autoregressive_infer_cfg(inp_B3HW.shape[0],label_B,g_seed=seed,cfg=1.5,top_k=900,top_p=0.95)
+            inp_false=preprocess_for_fid(inp_false,input_range="0_1")
+            fid.update(inp_false, real=False)
+            
         self.var_wo_ddp.train(training)
         
         stats = L_mean.new_tensor([L_mean.item(), L_tail.item(), acc_mean.item(), acc_tail.item(), tot])
         dist.allreduce(stats)
+                
+        fid_states = [
+            fid.real_features_sum,
+            fid.real_features_cov_sum,
+            fid.real_features_num_samples,
+            fid.fake_features_sum,
+            fid.fake_features_cov_sum,
+            fid.fake_features_num_samples
+        ]
+        for state in fid_states:
+            dist.allreduce(state)
+        
+        
+        fid_score = 0.0
+    
+        
+
+        
+
         tot = round(stats[-1].item())
         stats /= tot
         L_mean, L_tail, acc_mean, acc_tail, _ = stats.tolist()
-        return L_mean, L_tail, acc_mean, acc_tail, tot, time.time()-stt
+        fid_score = fid.compute().item()
+        return L_mean, L_tail, acc_mean, acc_tail, tot, time.time()-stt,fid_score
     
     def train_step(
         self, it: int, g_it: int, stepping: bool, metric_lg: MetricLogger, tb_lg: TensorboardLogger,
