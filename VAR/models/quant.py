@@ -477,7 +477,7 @@ class VectorQuantizer2(nn.Module):
             # find the nearest embedding
             scale = self.scale[si]
             downsample_f = self.conv_blocks[scale](f_dct_masked)
-            downsample_f = downsample_f.permute(0, 2, 3, 1).contiguous().reshape(-1,C)  # (B*h*w, 2*C)
+            downsample_f = downsample_f.permute(0, 2, 3, 1).contiguous().reshape(-1,C)  # (B*h*w, C)
             if self.l2_norm: # using l2_norm 
                 
                 downsample_f = F.normalize(downsample_f, p=2, dim=-1, eps=1e-6)

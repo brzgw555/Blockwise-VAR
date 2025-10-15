@@ -210,6 +210,10 @@ def main_training():
                 print(f'[{type(ld_train).__name__}] [ld_train.sampler.set_epoch({ep})]', flush=True, force=True)
         tb_lg.set_step(ep * iters_train)
         
+
+        #val_loss_mean, val_loss_tail, val_acc_mean, val_acc_tail, tot, cost ,fid_score = trainer.eval_ep(ld_val)
+        #print(f'fid: {fid_score}')
+
         stats, (sec, remain_time, finish_time) = train_one_ep(
             ep, ep == start_ep, start_it if ep == start_ep else 0, args, tb_lg, ld_train, iters_train, trainer
         )

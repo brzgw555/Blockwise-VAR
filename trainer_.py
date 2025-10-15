@@ -13,6 +13,8 @@ from utils.misc import MetricLogger, TensorboardLogger
 import swanlab
 from torchmetrics.image import FrechetInceptionDistance
 import torchvision.transforms as T
+import numpy as np
+from PIL import Image
 Ten = torch.Tensor
 FTen = torch.Tensor
 ITen = torch.LongTensor
@@ -88,6 +90,7 @@ class VARTrainer(object):
     def eval_ep(self, ld_val: DataLoader):
         fid=FrechetInceptionDistance(feature=2048).to(dist.get_device())
         fid.reset()
+        save_count=0
         
         
         tot = 0
@@ -119,9 +122,39 @@ class VARTrainer(object):
             inp_true=preprocess_for_fid(inp_B3HW,input_range="-1_1")
             fid.update(inp_true, real=True)
             
-            inp_false=self.var_wo_ddp.autoregressive_infer_cfg(inp_B3HW.shape[0],label_B,g_seed=seed,cfg=1.5,top_k=900,top_p=0.95)
-            inp_false=preprocess_for_fid(inp_false,input_range="0_1")
+            inp_result=self.var_wo_ddp.autoregressive_infer_cfg(inp_B3HW.shape[0],label_B,g_seed=seed,cfg=5,top_k=400,top_p=0.95)
+            inp_false=inp_result[-1]
+            inp_false_re=inp_false
+            inp_false=preprocess_for_fid(inp_false,input_range="-1_1")
             fid.update(inp_false, real=False)
+
+            if save_count <100:
+                for i in range(B):
+                    if save_count>70 and save_count<100:
+                        x_real=inp_B3HW[i]
+                        x_real=x_real.permute(1,2,0).contiguous().cpu().numpy()
+                        x_real=(x_real+1)*127.5
+                        x_real=x_real.clip(0, 255).astype(np.uint8)
+                        Image.fromarray(x_real).save(f"./real_save/test_image{save_count}.png")
+                        for k,scale in enumerate(inp_result):
+                            x_fake=scale[i]
+                            x_fake=x_fake.permute(1,2,0).contiguous().cpu().numpy()
+                            x_fake=(x_fake+1)*127.5
+                            
+                            x_fake=x_fake.clip(0,255).astype(np.uint8)
+                            Image.fromarray(x_fake).save(f"./gene_save/test_image{save_count}_scale{k}.png")
+                        x_fake_last=inp_false_re[i]
+                        x_fake_last=x_fake_last.permute(1,2,0).contiguous().cpu().numpy()
+                        x_fake_last=(x_fake_last+1)*127.5
+                            
+                        x_fake_last=x_fake_last.clip(0,255).astype(np.uint8)
+                        Image.fromarray(x_fake_last).save(f"./gene_save/test_image{save_count}.png")
+
+
+                    save_count+=1
+                    if save_count>=50:
+                        break
+
             
         self.var_wo_ddp.train(training)
         
